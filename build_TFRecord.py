@@ -75,8 +75,8 @@ def write_tfrecords(input_dir, output_dir):
         size = img.size
         img_raw = img.tobytes()
         example = tf.train.Example(features=tf.train.Features(feature={
-            'img_width' : _int64_feature(size[0]),
-            'img_height' : _int64_feature(size[1]),
+            # 'img_width' : _int64_feature(size[0]),
+            # 'img_height' : _int64_feature(size[1]),
             'img_raw' : _bytes_feature(img_raw)
         }))
 

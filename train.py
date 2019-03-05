@@ -2,18 +2,19 @@ import tensorflow as tf
 from Generator import Generator
 from Discriminator import Discriminator
 from build_dataset import build_dataset
-from utils import cycle_consistency_loss, generator_loss, discriminator_loss, make_optimizer, convert2int
+from utils import cycle_consistency_loss, generator_loss, discriminator_loss, make_optimizer, fake_image_pool
 import os
+import numpy as np
 
 
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 tfrecords_Xpath = './data/trainX_tfrecords'
 tfrecords_Ypath = './data/trainY_tfrecords'
 image_width = 400
 image_height = 300
 batch_size = 2
-num_epochs = 100
-learning_rate = 0.001
+num_epochs = 10
+learning_rate = 0.0002
 beta1 = 0.5
 shuffle_buffer = 100  #定义随机打乱数据时buffer的大小
 ngf = 32
@@ -37,8 +38,13 @@ F = Generator(ngf, 'F')
 D_X = Discriminator(ndf, 'D_X')
 D_Y = Discriminator(ndf, 'D_Y')
 
-real_X = tf.placeholder(tf.float32, [batch_size, image_height, image_width, 3])
-real_Y = tf.placeholder(tf.float32, [batch_size, image_height, image_width, 3])
+fake_images_X = np.zeros((50, batch_size, image_height, image_width, 3))
+fake_images_Y = np.zeros((50, batch_size, image_height, image_width, 3))
+
+real_X = tf.placeholder(tf.float32, [batch_size, image_height, image_width, 3], name="input_X")
+real_Y = tf.placeholder(tf.float32, [batch_size, image_height, image_width, 3], name="input_Y")
+fake_pool_X = tf.placeholder(tf.float32, [batch_size, image_height, image_width, 3], name="input_fakeX")
+fake_pool_Y = tf.placeholder(tf.float32, [batch_size, image_height, image_width, 3], name="input_fakeY")
 fake_X = F(real_Y)
 fake_Y = G(real_X)
 cyc_X = F(fake_Y)
@@ -47,6 +53,8 @@ rec_X = D_X(real_X)
 rec_Y = D_Y(real_Y)
 fake_rec_X = D_X(fake_X)
 fake_rec_Y = D_Y(fake_Y)
+fake_pool_rec_X = D_X(fake_pool_X)
+fake_pool_rec_Y = D_Y(fake_pool_Y)
 
 cycle_loss = cycle_consistency_loss(real_X, cyc_X, real_Y, cyc_Y)
 
@@ -55,8 +63,8 @@ G_loss = G_gen_loss + cycle_loss
 F_gen_loss = generator_loss(fake_rec_X)
 F_loss = F_gen_loss + cycle_loss
 
-D_X_loss = discriminator_loss(rec_X, fake_rec_X)
-D_Y_loss = discriminator_loss(rec_Y, fake_rec_Y)
+D_X_loss = discriminator_loss(rec_X, fake_pool_rec_X)
+D_Y_loss = discriminator_loss(rec_Y, fake_pool_rec_Y)
 
 
 # summary
@@ -92,39 +100,42 @@ D_Y_optimizer = make_optimizer(D_Y_loss, D_Y_vars, learning_rate, beta1, name='A
 F_optimizer = make_optimizer(F_loss, F_vars, learning_rate, beta1, name='Adam_F')
 D_X_optimizer = make_optimizer(D_X_loss, D_X_vars, learning_rate, beta1, name='Adam_D_X')
 
-# with tf.control_dependencies([G_optimizer, D_Y_optimizer, F_optimizer, D_X_optimizer]):
-#     optimizer = tf.no_op(name='optimizers')
 
 saver = tf.train.Saver()
 
 with tf.Session() as sess:
+    print('---Create Session---')
     summary_writer = tf.summary.FileWriter(MODEL_SAVE_PATH, sess.graph)
     step = 0
     sess.run((tf.global_variables_initializer(), tf.local_variables_initializer()))
-    sess.run(iterator_X.initializer)
-    sess.run(iterator_Y.initializer)
+    sess.run([iterator_X.initializer, iterator_Y.initializer])
+    # sess.run()
     while True:
         try:
+            # print("-----------")
+            X = sess.run(image_batch_X)
+            # print("X ready: ", X.shape)
+            Y = sess.run(image_batch_Y)
+            # print("Y ready: ", Y.shape)
 
-            X, Y = sess.run([image_batch_X, image_batch_Y])
+            _, fake_sampleY, G_loss_val = sess.run([G_optimizer, fake_Y, G_loss], feed_dict={real_X: X, real_Y: Y})
+            fake_sampleY = fake_image_pool(step, fake_sampleY, fake_images_Y)
 
-            _, D_Y_loss_val = sess.run([D_Y_optimizer, D_Y_loss], feed_dict={real_X: X, real_Y: Y})
-            for i in range(0, 5):
-                _, G_loss_val = sess.run([G_optimizer, G_loss], feed_dict={real_X: X, real_Y: Y})
+            _, D_Y_loss_val = sess.run([D_Y_optimizer, D_Y_loss], feed_dict={real_X: X, real_Y: Y, fake_pool_Y: fake_sampleY})
 
-            _, D_X_loss_val = sess.run([D_X_optimizer, D_X_loss], feed_dict={real_X: X, real_Y: Y})
-            for i in range(0, 5):
-                _, F_loss_val = sess.run([F_optimizer, F_loss], feed_dict={real_X: X, real_Y: Y})
+            _, fake_sampleX, F_loss_val = sess.run([F_optimizer, fake_X, F_loss], feed_dict={real_X: X, real_Y: Y})
+            fake_sampleX = fake_image_pool(step, fake_sampleX, fake_images_X)
 
-            summary = sess.run(merged, feed_dict={real_X: X, real_Y: Y})
-            summary_writer.add_summary(summary, step)
+            _, D_X_loss_val = sess.run([D_X_optimizer, D_X_loss], feed_dict={real_X: X, real_Y: Y, fake_pool_X: fake_sampleX})
+
             if step % 100 == 0:
                 print('-----------Step %d:-------------' % step)
-                # print('  Cycle_loss   : {}'.format(Cycle_loss_val))
                 print('  G_loss   : {}'.format(G_loss_val))
                 print('  D_Y_loss : {}'.format(D_Y_loss_val))
                 print('  F_loss   : {}'.format(F_loss_val))
                 print('  D_X_loss : {}'.format(D_X_loss_val))
+                summary = sess.run(merged, feed_dict={real_X: X, real_Y: Y, fake_pool_Y: fake_sampleY, fake_pool_X: fake_sampleX})
+                summary_writer.add_summary(summary, step)
             if step % 100 == 0:
                 saver.save(sess, os.path.join(MODEL_SAVE_PATH, MODEL_NAME), global_step=step)
             step += 1
